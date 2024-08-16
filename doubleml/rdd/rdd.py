@@ -100,48 +100,46 @@ class RDFlex():
             self._h_fs = h_fs
 
         self._fs_kernel_function, self._fs_kernel_name = self._check_and_set_kernel(fs_kernel)
-        self._w, self._w_mask = self._calc_weights(kernel=self._fs_kernel_function, h=self.h_fs)
+        self._w = self._calc_weights(kernel=self._fs_kernel_function, h=self.h_fs)
 
         # TODO: Add further input checks
         self.kwargs = kwargs
 
-        self._smpls = DoubleMLResampling(n_folds=self.n_folds, n_rep=self.n_rep, n_obs=self.w_mask.sum(),
-                                         stratify=obj_dml_data.d[self.w_mask]).split_samples()
+        self._smpls = DoubleMLResampling(n_folds=self.n_folds, n_rep=self.n_rep, n_obs=obj_dml_data.n_obs,
+                                         stratify=obj_dml_data.d).split_samples()
 
         self._initialize_reps(n_rep=self.n_rep)
 
     def __str__(self):
-        # TODO: Adjust __str__ to other DoubleML classes (see doubleml.py)
-        if self._M_Y[0] is not None:
-            ci_conventional = [round(ci, 3) for ci in self.ci[0, :]]
-            ci_robust = [round(ci, 3) for ci in self.ci[2, :]]
-            col_format = "{:<20} {:>8} {:>8} {:>8} {:>8} to {:<8}"
+        if np.any(~np.isnan(self._M_Y[:, 0])):
+            method_names = ["Conventional", "Robust"]
+            lines = [
+                "Method             Coef.     S.E.     t-stat       P>|t|           95% CI",
+                "-------------------------------------------------------------------------",
+            ]
 
-            header = (
-                "Method                  Coef.     S.E.    P>|t|            95% CI\n"
-                "-----------------------------------------------------------------"
-            )
+            for i, name in enumerate(method_names):
+                if i == 0:
+                    line = (
+                        f"{name:<18}"
+                        f"{self.coef[i]:<10.3f}"
+                        f"{self.se[i]:<10.3f}"
+                        f"{self.t_stat[i]:<9.3f}"
+                        f"{self.pval[i]:<11.3e}"
+                        f"[{self.ci[i,0]:.3f}, {self.ci[i,1]:.3f}]"
+                    )
+                elif i == 1:
+                    # Access robust values from index 2 as specified
+                    line = (
+                        f"{name:<17}"
+                        "      -        -     "
+                        f"{self.t_stat[2]:<9.3f}"
+                        f"{self.pval[2]:<11.3e}"
+                        f"[{self.ci[2,0]:.3f}, {self.ci[2,1]:.3f}]"
+                    )
 
-            conventional_row = col_format.format(
-                "Conventional",
-                round(self.coef[0], 3),
-                round(self.se[0], 3),
-                round(self.pval[0], 3),
-                ci_conventional[0],
-                ci_conventional[1]
-            )
-
-            robust_row = col_format.format(
-                "Robust",
-                "-",
-                "-",
-                round(self.pval[2], 3),
-                ci_robust[0],
-                ci_robust[1]
-            )
-
-            result = f"{header}\n{conventional_row}\n{robust_row}"
-
+                lines.append(line)
+            result = "\n".join(lines)
             return result
         else:
             return "DoubleML RDFlex Object. Run `.fit()` for estimation."
@@ -187,13 +185,6 @@ class RDFlex():
         Weights for the first stage estimation.
         """
         return self._w
-
-    @property
-    def w_mask(self):
-        """
-        Mask for the weights of the first stage estimation.
-        """
-        return self._w_mask
 
     @property
     def cutoff(self):
@@ -282,36 +273,34 @@ class RDFlex():
             # reset weights, smpls and bandwidth
             h = None
             weights = self.w
-            weights_mask = self.w_mask
-            tmp_smpls = self._smpls[i_rep]
+            smpls = self._smpls[i_rep]
 
-            for _ in range(n_iterations):
-                y_masked = self._dml_data.y[weights_mask]
-                eta_Y = self._fit_nuisance_model(outcome=y_masked, estimator_name="ml_g",
-                                                 weights=weights, w_mask=weights_mask, smpls=tmp_smpls)
-                self._M_Y[i_rep] = y_masked - eta_Y
+            for _it in range(n_iterations):
+                Y = self._dml_data.y
+                eta_Y = self._fit_nuisance_model(outcome=Y, estimator_name="ml_g",
+                                                 weights=weights, smpls=smpls)
+                self._M_Y[:, i_rep] = Y - eta_Y
 
                 if self.fuzzy:
-                    d_masked = self._dml_data.d[weights_mask]
-                    eta_D = self._fit_nuisance_model(outcome=d_masked, estimator_name="ml_m",
-                                                     weights=weights, w_mask=weights_mask, smpls=tmp_smpls)
-                    self._M_D[i_rep] = d_masked - eta_D
+                    D = self._dml_data.d
+                    eta_D = self._fit_nuisance_model(outcome=D, estimator_name="ml_m",
+                                                     weights=weights, smpls=smpls)
+                    self._M_D[:, i_rep] = D - eta_D
+
+                # set h to None if it is not the final iteration
+                h = None if (_it != (n_iterations - 1)) else h
 
                 # update weights, smpls and bandwidth
-                h = self._fit_rdd(h=h, w_mask=weights_mask)
-                weights, weights_mask = self._calc_weights(kernel=self._fs_kernel_function, h=h)
-                # using new masked d for stratification
-                # TODO: Add seed to resampling
-                tmp_smpls = DoubleMLResampling(n_folds=self.n_folds, n_rep=1, n_obs=weights_mask.sum(),
-                                               stratify=self._dml_data.d[weights_mask]).split_samples()[0]
+                h = self._fit_rdd(h=h)
+                weights = self._calc_weights(kernel=self._fs_kernel_function, h=h)
+
         self.aggregate_over_splits()
 
         return self
 
-    def _fit_nuisance_model(self, outcome, estimator_name, weights, w_mask, smpls):
-        Z = self._intendend_treatment[w_mask]  # instrument for treatment
-        X = self._dml_data.x[w_mask]
-        weights = weights[w_mask]
+    def _fit_nuisance_model(self, outcome, estimator_name, weights, smpls):
+        Z = self._intendend_treatment  # instrument for treatment
+        X = self._dml_data.x
         ZX = np.column_stack((Z, X))
 
         mu_left, mu_right = np.full_like(outcome, fill_value=np.nan), np.full_like(outcome, fill_value=np.nan)
@@ -333,9 +322,9 @@ class RDFlex():
 
         return (mu_left + mu_right)/2
 
-    def _fit_rdd(self, w_mask, h=None):
-        _rdd_res = rdrobust(y=self._M_Y[self._i_rep], x=self._dml_data.s[w_mask],
-                            fuzzy=self._M_D[self._i_rep], h=h, **self.kwargs)
+    def _fit_rdd(self, h=None):
+        _rdd_res = rdrobust(y=self._M_Y[:, self._i_rep], x=self._dml_data.s,
+                            fuzzy=self._M_D[:, self._i_rep], h=h, **self.kwargs)
         self._all_coef[:, self._i_rep] = _rdd_res.coef.values.flatten()
         self._all_se[:, self._i_rep] = _rdd_res.se.values.flatten()
         self._all_ci[:, :, self._i_rep] = _rdd_res.ci.values
@@ -345,15 +334,15 @@ class RDFlex():
 
     def _calc_weights(self, kernel, h):
         weights = kernel(self._score, h)
-        return weights, weights.astype(bool)
+        return weights
 
     def _initialize_reps(self, n_rep):
-        self._M_Y = [None] * n_rep
-        self._M_D = [None] * n_rep
+        self._M_Y = np.full(shape=(self._dml_data.n_obs, n_rep), fill_value=np.nan)
+        self._M_D = np.full(shape=(self._dml_data.n_obs, n_rep), fill_value=np.nan)
         self._rdd_obj = [None] * n_rep
-        self._all_coef = np.empty(shape=(3, n_rep))
-        self._all_se = np.empty(shape=(3, n_rep))
-        self._all_ci = np.empty(shape=(3, 2, n_rep))
+        self._all_coef = np.full(shape=(3, n_rep), fill_value=np.nan)
+        self._all_se = np.full(shape=(3, n_rep), fill_value=np.nan)
+        self._all_ci = np.full(shape=(3, 2, n_rep), fill_value=np.nan)
         return
 
     def _check_data(self, obj_dml_data, cutoff):
