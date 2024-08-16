@@ -126,7 +126,7 @@ class RDFlex():
                         f"{self.se[i]:<10.3f}"
                         f"{self.t_stat[i]:<9.3f}"
                         f"{self.pval[i]:<11.3e}"
-                        f"[{self.ci[i,0]:.3f}, {self.ci[i,1]:.3f}]"
+                        f"[{self.ci[i, 0]:.3f}, {self.ci[i, 1]:.3f}]"
                     )
                 elif i == 1:
                     # Access robust values from index 2 as specified
@@ -135,7 +135,7 @@ class RDFlex():
                         "      -        -     "
                         f"{self.t_stat[2]:<9.3f}"
                         f"{self.pval[2]:<11.3e}"
-                        f"[{self.ci[2,0]:.3f}, {self.ci[2,1]:.3f}]"
+                        f"[{self.ci[2, 0]:.3f}, {self.ci[2, 1]:.3f}]"
                     )
 
                 lines.append(line)
@@ -171,6 +171,13 @@ class RDFlex():
         Initial bandwidth in the first stage estimation.
         """
         return self._h_fs
+
+    @property
+    def h(self):
+        """
+        Array of final bandwidths in the last stage estimation (shape (``n_rep``,)).
+        """
+        return self._h
 
     @property
     def fs_kernel(self):
@@ -260,39 +267,34 @@ class RDFlex():
         self : object
         """
 
-        if not isinstance(n_iterations, int):
-            raise TypeError('The number of iterations for the iterative bandwidth fitting must be of int type. '
-                            f'{str(n_iterations)} of type {str(type(n_iterations))} was passed.')
-        if n_iterations < 1:
-            raise ValueError('The number of iterations for the iterative bandwidth fitting has to be positive. '
-                             f'{str(n_iterations)} was passed.')
+        self._check_iterations(n_iterations)
 
+        # set variables for readablitity
+        Y = self._dml_data.y
+        D = self._dml_data.d
         for i_rep in range(self.n_rep):
             self._i_rep = i_rep
 
             # reset weights, smpls and bandwidth
-            h = None
+            h = None  # required if n_iterations == 1
             weights = self.w
             smpls = self._smpls[i_rep]
 
-            for _it in range(n_iterations):
-                Y = self._dml_data.y
+            for iteration in range(n_iterations):
                 eta_Y = self._fit_nuisance_model(outcome=Y, estimator_name="ml_g",
                                                  weights=weights, smpls=smpls)
                 self._M_Y[:, i_rep] = Y - eta_Y
 
                 if self.fuzzy:
-                    D = self._dml_data.d
                     eta_D = self._fit_nuisance_model(outcome=D, estimator_name="ml_m",
                                                      weights=weights, smpls=smpls)
                     self._M_D[:, i_rep] = D - eta_D
 
-                # set h to None if it is not the final iteration
-                h = None if (_it != (n_iterations - 1)) else h
-
-                # update weights, smpls and bandwidth
-                h = self._fit_rdd(h=h)
-                weights = self._calc_weights(kernel=self._fs_kernel_function, h=h)
+                # update weights via iterative bandwidth fitting
+                if iteration < (n_iterations - 1):
+                    h, weights = self._update_weights()
+                else:
+                    self._fit_rdd(h=h)
 
         self.aggregate_over_splits()
 
@@ -322,15 +324,23 @@ class RDFlex():
 
         return (mu_left + mu_right)/2
 
-    def _fit_rdd(self, h=None):
-        _rdd_res = rdrobust(y=self._M_Y[:, self._i_rep], x=self._dml_data.s,
-                            fuzzy=self._M_D[:, self._i_rep], h=h, **self.kwargs)
-        self._all_coef[:, self._i_rep] = _rdd_res.coef.values.flatten()
-        self._all_se[:, self._i_rep] = _rdd_res.se.values.flatten()
-        self._all_ci[:, :, self._i_rep] = _rdd_res.ci.values
-        self._rdd_obj[self._i_rep] = _rdd_res
+    def _update_weights(self):
+        rdd_res = rdrobust(y=self._M_Y[:, self._i_rep], x=self._score,
+                           fuzzy=self._M_D[:, self._i_rep], h=None, **self.kwargs)
         # TODO: "h" features "left" and "right" - what do we do if it is non-symmetric?
-        return _rdd_res.bws.loc["h"].max()
+        h = rdd_res.bws.loc["h"].max()
+        weights = self._calc_weights(kernel=self._fs_kernel_function, h=h)
+
+        return h, weights
+
+    def _fit_rdd(self, h=None):
+        rdd_res = rdrobust(y=self._M_Y[:, self._i_rep], x=self._score,
+                           fuzzy=self._M_D[:, self._i_rep], h=h, **self.kwargs)
+        self._all_coef[:, self._i_rep] = rdd_res.coef.values.flatten()
+        self._all_se[:, self._i_rep] = rdd_res.se.values.flatten()
+        self._all_ci[:, :, self._i_rep] = rdd_res.ci.values
+        self._rdd_obj[self._i_rep] = rdd_res
+        return
 
     def _calc_weights(self, kernel, h):
         weights = kernel(self._score, h)
@@ -339,6 +349,7 @@ class RDFlex():
     def _initialize_reps(self, n_rep):
         self._M_Y = np.full(shape=(self._dml_data.n_obs, n_rep), fill_value=np.nan)
         self._M_D = np.full(shape=(self._dml_data.n_obs, n_rep), fill_value=np.nan)
+        self._h = np.full(shape=n_rep, fill_value=np.nan)
         self._rdd_obj = [None] * n_rep
         self._all_coef = np.full(shape=(3, n_rep), fill_value=np.nan)
         self._all_se = np.full(shape=(3, n_rep), fill_value=np.nan)
@@ -437,6 +448,15 @@ class RDFlex():
             kernel_name = 'custom_kernel'
 
         return kernel_function, kernel_name
+
+    def _check_iterations(self, n_iterations):
+        """Validate the number of iterations."""
+        if not isinstance(n_iterations, int):
+            raise TypeError('The number of iterations for the iterative bandwidth fitting must be of int type. '
+                            f'{str(n_iterations)} of type {str(type(n_iterations))} was passed.')
+        if n_iterations < 1:
+            raise ValueError('The number of iterations for the iterative bandwidth fitting has to be positive. '
+                             f'{str(n_iterations)} was passed.')
 
     def aggregate_over_splits(self):
         self._coef = np.median(self.all_coef, axis=1)
