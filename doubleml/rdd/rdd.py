@@ -1,5 +1,6 @@
 import warnings
 import numpy as np
+import pandas as pd
 from collections.abc import Callable
 
 from scipy.stats import norm
@@ -31,6 +32,10 @@ class RDFlex():
         :py:class:`sklearn.ensemble.RandomForestClassifier`) for the nuisance function :math:`m_0(X) = E[D|X]`.
         Or None, in case of a non-fuzzy design.
 
+    fuzzy: bool
+        Indicates whether to fit a fuzzy or a sharp design.
+        Default is ``True``.
+    
     n_folds : int
         Number of folds.
         Default is ``5``.
@@ -67,6 +72,7 @@ class RDFlex():
                  obj_dml_data,
                  ml_g,
                  ml_m=None,
+                 fuzzy=True,
                  cutoff=0,
                  n_folds=5,
                  n_rep=1,
@@ -80,7 +86,11 @@ class RDFlex():
         self._score = self._dml_data.s - cutoff
         self._cutoff = cutoff
         self._intendend_treatment = (self._score >= 0).astype(bool)
-        self._fuzzy = any(self._dml_data.d != self._intendend_treatment)
+        self._fuzzy = fuzzy
+
+        if not fuzzy and any(self._dml_data.d != self._intendend_treatment):
+            warnings.warn('Treatment assignment does not match treatment intended. \n \
+                           Did you mean `fuzzy = True`?')
 
         self._check_and_set_learner(ml_g, ml_m)
 
@@ -294,11 +304,52 @@ class RDFlex():
                 else:
                     if n_iterations == 1:
                         h = None
-                    self._fit_rdd(h=h)
+
+                    rdd_res = self._fit_rdd(h=h)
+                    self._set_coefs(rdd_res, h)
 
         self.aggregate_over_splits()
 
         return self
+
+    def confint(self, level=0.95):
+        """
+        Confidence intervals for RDFlex models.
+
+        Parameters
+        ----------
+        level : float
+            The confidence level.
+            Default is ``0.95``.
+
+        Returns
+        -------
+        df_ci : pd.DataFrame
+            A data frame with the confidence interval(s).
+        """
+        if not isinstance(level, float):
+            raise TypeError('The confidence level must be of float type. '
+                            f'{str(level)} of type {str(type(level))} was passed.')
+        if (level <= 0) | (level >= 1):
+            raise ValueError('The confidence level must be in (0,1). '
+                             f'{str(level)} was passed.')
+
+        # compute critical values
+        alpha = 1 - level
+        percentages = np.array([alpha / 2, 1. - alpha / 2])
+
+        critical_values = np.repeat(norm.ppf(percentages[1]), self._n_rep)
+
+        # compute all cis over repetitions (shape: n_coef x 2 x n_rep)
+        self._all_cis = np.stack(
+            (self.all_coef - self.all_se * critical_values,
+             self.all_coef + self.all_se * critical_values),
+            axis=1)
+        ci = np.median(self._all_cis, axis=2)
+        df_ci = pd.DataFrame(ci, columns=['{:.1f} %'.format(i * 100) for i in percentages],
+                             index=['Conventional', 'Bias-Corrected', 'Robust'])
+
+        return df_ci
 
     def _fit_nuisance_model(self, outcome, estimator_name, weights, smpls):
         Z = self._intendend_treatment  # instrument for treatment
@@ -325,8 +376,7 @@ class RDFlex():
         return (mu_left + mu_right)/2
 
     def _update_weights(self):
-        rdd_res = rdrobust(y=self._M_Y[:, self._i_rep], x=self._score,
-                           fuzzy=self._M_D[:, self._i_rep], h=None, **self.kwargs)
+        rdd_res = self._fit_rdd()
         # TODO: "h" features "left" and "right" - what do we do if it is non-symmetric?
         h = rdd_res.bws.loc["h"].max()
         weights = self._calc_weights(kernel=self._fs_kernel_function, h=h)
@@ -334,15 +384,20 @@ class RDFlex():
         return h, weights
 
     def _fit_rdd(self, h=None):
-        rdd_res = rdrobust(y=self._M_Y[:, self._i_rep], x=self._score,
-                           fuzzy=self._M_D[:, self._i_rep], h=h, **self.kwargs)
+        if self.fuzzy:
+            rdd_res = rdrobust(y=self._M_Y[:, self._i_rep], x=self._score,
+                               fuzzy=self._M_D[:, self._i_rep], h=h, **self.kwargs)
+        else:
+            rdd_res = rdrobust(y=self._M_Y[:, self._i_rep], x=self._score,
+                               h=h, **self.kwargs)
+        return rdd_res
 
+    def _set_coefs(self, rdd_res, h):
         self._h[self._i_rep] = h
         self._all_coef[:, self._i_rep] = rdd_res.coef.values.flatten()
         self._all_se[:, self._i_rep] = rdd_res.se.values.flatten()
         self._all_ci[:, :, self._i_rep] = rdd_res.ci.values
         self._rdd_obj[self._i_rep] = rdd_res
-        return
 
     def _calc_weights(self, kernel, h):
         weights = kernel(self._score, h)
