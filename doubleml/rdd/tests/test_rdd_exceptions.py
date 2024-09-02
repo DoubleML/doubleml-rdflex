@@ -11,7 +11,7 @@ from sklearn.base import BaseEstimator, RegressorMixin, ClassifierMixin
 from sklearn.linear_model import Lasso, LogisticRegression
 
 n = 500
-data = make_simple_rdd_data(n_obs=n)
+data = make_simple_rdd_data(n_obs=n, fuzzy=False)
 df = pd.DataFrame(
     np.column_stack((data['Y'], data['D'], data['score'], data['X'])),
     columns=['y', 'd', 'score'] + ['x' + str(i) for i in range(data['X'].shape[1])]
@@ -105,11 +105,29 @@ def test_rdd_exception_data():
 def test_rdd_exception_cutoff():
     msg = "Cutoff value has to be a float or int. Object of type <class 'list'> passed."
     with pytest.raises(TypeError, match=msg):
-        _ = RDFlex(dml_data, ml_g, cutoff=[2])
+        _ = RDFlex(dml_data, ml_g, cutoff=[200])
 
     msg = 'Cutoff value is not within the range of the score variable. '
     with pytest.raises(ValueError, match=msg):
-        _ = RDFlex(dml_data, ml_g, cutoff=2)
+        _ = RDFlex(dml_data, ml_g, cutoff=200)
+
+
+@pytest.mark.ci
+def test_rdd_warning_fuzzy():
+    msg = ('Fuzzy flag indicates compliance of actual treatment with the cutoff. '
+           'But the dataset contains non-compliant defiers.')
+    with pytest.warns(UserWarning, match=msg):
+        _ = RDFlex(dml_data, ml_g, cutoff=0.1)
+
+
+@pytest.mark.ci
+def test_rdd_warning_treatment_assignment():
+    msg = ("Treatment probability within bandwidth left from cutoff higher than right from cutoff.\n"
+           "Treatment assignment might be based on the wrong side of the cutoff.")
+    with pytest.warns(UserWarning, match=msg):
+        tmp_dml_data = copy.deepcopy(dml_data)
+        tmp_dml_data._s = -1.0*tmp_dml_data._s
+        _ = RDFlex(tmp_dml_data, ml_g, ml_m, fuzzy=True)
 
 
 @pytest.mark.ci
@@ -128,14 +146,14 @@ def test_rdd_exception_learner():
     # ml_m
     msg = r'Invalid learner provided for ml_m: Lasso\(\) has no method .predict_proba\(\).'
     with pytest.raises(TypeError, match=msg):
-        _ = RDFlex(dml_data, ml_g, ml_m=Lasso())
+        _ = RDFlex(dml_data, ml_g, ml_m=Lasso(), fuzzy=True)
     msg = 'Fuzzy design requires a classifier ml_m for treatment assignment.'
     with pytest.raises(ValueError, match=msg):
-        _ = RDFlex(dml_data, ml_g)
+        _ = RDFlex(dml_data, ml_g, fuzzy=True)
     msg = (r"The ml_m learner DummyClassifierNoSampleWeight\(\) does not support sample weights. Please choose a learner"
            " that supports sample weights.")
     with pytest.raises(ValueError, match=msg):
-        _ = RDFlex(dml_data, ml_g, ml_m=DummyClassifierNoSampleWeight())
+        _ = RDFlex(dml_data, ml_g, ml_m=DummyClassifierNoSampleWeight(), fuzzy=True)
 
     msg = ('A learner ml_m has been provided for for a sharp design but will be ignored. '
            'A learner ml_m is not required for estimation.')

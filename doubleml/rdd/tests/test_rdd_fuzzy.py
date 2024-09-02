@@ -1,5 +1,5 @@
 """
-Dummy test using fixed learner for sharp data
+Dummy test using fixed learner for fuzzy data
 """
 import pytest
 import numpy as np
@@ -30,13 +30,13 @@ def p(request):
 
 
 @pytest.fixture(scope='module')
-def data(rdd_sharp_data, cutoff):
-    return rdd_sharp_data(cutoff)
+def data(rdd_fuzzy_data, cutoff):
+    return rdd_fuzzy_data(cutoff)
 
 
 @pytest.fixture(scope='module')
-def data_zero(rdd_sharp_data):
-    return rdd_sharp_data(0.0)
+def data_zero(rdd_fuzzy_data):
+    return rdd_fuzzy_data(0.0)
 
 
 @pytest.fixture(scope='module')

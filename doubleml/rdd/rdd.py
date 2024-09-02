@@ -32,9 +32,11 @@ class RDFlex():
         :py:class:`sklearn.ensemble.RandomForestClassifier`) for the nuisance function :math:`m_0(X) = E[D|X]`.
         Or None, in case of a non-fuzzy design.
 
-    fuzzy: bool
+    fuzzy : bool
         Indicates whether to fit a fuzzy or a sharp design.
-        Default is ``True``.
+        That is if the intended treatment defined by the cutoff can diverge from the actual treatment given
+        with ``obj_dml_data.d``.
+        Default is ``False``.
 
     n_folds : int
         Number of folds.
@@ -72,7 +74,7 @@ class RDFlex():
                  obj_dml_data,
                  ml_g,
                  ml_m=None,
-                 fuzzy=True,
+                 fuzzy=False,
                  cutoff=0,
                  n_folds=5,
                  n_rep=1,
@@ -89,8 +91,8 @@ class RDFlex():
         self._fuzzy = fuzzy
 
         if not fuzzy and any(self._dml_data.d != self._intendend_treatment):
-            warnings.warn('Treatment assignment does not match treatment intended.\n'
-                          'Did you mean `fuzzy = True`?')
+            warnings.warn('Fuzzy flag indicates compliance of actual treatment with the cutoff. '
+                          'But the dataset contains non-compliant defiers.')
 
         self._check_and_set_learner(ml_g, ml_m)
 
@@ -413,7 +415,6 @@ class RDFlex():
         self._all_coef = np.full(shape=(3, n_rep), fill_value=np.nan)
         self._all_se = np.full(shape=(3, n_rep), fill_value=np.nan)
         self._all_ci = np.full(shape=(3, 2, n_rep), fill_value=np.nan)
-        return
 
     def _check_data(self, obj_dml_data, cutoff):
         if not isinstance(obj_dml_data, DoubleMLData):
@@ -450,7 +451,6 @@ class RDFlex():
             raise ValueError('Incompatible data. ' +
                              ' and '.join(obj_dml_data.z_cols) +
                              ' have been set as instrumental variable(s). ')
-        return
 
     def _check_and_set_learner(self, ml_g, ml_m):
         # check ml_g
@@ -481,7 +481,6 @@ class RDFlex():
             if ml_m is not None:
                 warnings.warn(('A learner ml_m has been provided for for a sharp design but will be ignored. '
                                'A learner ml_m is not required for estimation.'))
-        return
 
     def _check_and_set_kernel(self, fs_kernel):
         if not isinstance(fs_kernel, (str, Callable)):
@@ -517,12 +516,13 @@ class RDFlex():
             raise ValueError('The number of iterations for the iterative bandwidth fitting has to be positive. '
                              f'{str(n_iterations)} was passed.')
 
-    def _check_effect_sign(self):
+    def _check_effect_sign(self, tolerance=1e-6):
         d_left, d_right = self._dml_data.d[self._score < 0], self._dml_data.d[self._score > 0]
         w_left, w_right = self._w[self._score < 0], self._w[self._score > 0]
-        if np.average(d_left, weights=w_left) > np.average(d_right, weights=w_right):
+        treatment_prob_difference = np.average(d_left, weights=w_left) - np.average(d_right, weights=w_right)
+        if treatment_prob_difference > tolerance:
             warnings.warn("Treatment probability within bandwidth left from cutoff higher than right from cutoff.\n"
-                          "Treatment effect may have a reversed sign.")
+                          "Treatment assignment might be based on the wrong side of the cutoff.")
 
     def aggregate_over_splits(self):
         self._coef = np.median(self.all_coef, axis=1)
