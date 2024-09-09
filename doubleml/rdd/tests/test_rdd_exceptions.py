@@ -114,8 +114,7 @@ def test_rdd_exception_cutoff():
 
 @pytest.mark.ci
 def test_rdd_warning_fuzzy():
-    msg = ('Fuzzy flag indicates compliance of actual treatment with the cutoff. '
-           'But the dataset contains non-compliant defiers.')
+    msg = 'A sharp RD design is being estimated, but the data indicate that the design is fuzzy.'
     with pytest.warns(UserWarning, match=msg):
         _ = RDFlex(dml_data, ml_g, cutoff=0.1)
 
@@ -198,6 +197,18 @@ def test_rdd_exception_h_fs():
     msg = "Initial bandwidth 'h_fs' has to be a float. Object of type <class 'int'> passed."
     with pytest.raises(TypeError, match=msg):
         _ = RDFlex(dml_data, ml_g, ml_m, h_fs=1)
+
+
+@pytest.mark.ci
+def test_rdd_exception_fs_specification():
+    msg = "fs_specification must be a string. 1 of type <class 'int'> was passed."
+    with pytest.raises(TypeError, match=msg):
+        _ = RDFlex(dml_data, ml_g, ml_m, fs_specification=1)
+
+    msg = ("Invalid fs_specification 'local_constant'. "
+           r"Valid specifications are \['cutoff', 'cutoff and score', 'interacted cutoff and score'\].")
+    with pytest.raises(ValueError, match=msg):
+        _ = RDFlex(dml_data, ml_g, ml_m, fs_specification='local_constant')
 
 
 @pytest.mark.ci

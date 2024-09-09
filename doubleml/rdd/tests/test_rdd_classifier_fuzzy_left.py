@@ -3,6 +3,9 @@ Dummy test using fixed learner for left sided fuzzy data
 """
 import pytest
 import numpy as np
+from sklearn.dummy import DummyClassifier
+
+ml_g_dummy = DummyClassifier(strategy='constant', constant=0)
 
 
 @pytest.fixture(scope='module',
@@ -37,25 +40,25 @@ def fs_specification(request):
 
 @pytest.fixture(scope='module')
 def data(rdd_fuzzy_left_data, cutoff):
-    return rdd_fuzzy_left_data(cutoff)
+    return rdd_fuzzy_left_data(cutoff, binary_outcome=True)
 
 
 @pytest.fixture(scope='module')
 def data_zero(rdd_fuzzy_left_data):
-    return rdd_fuzzy_left_data(0.0)
+    return rdd_fuzzy_left_data(0.0, binary_outcome=True)
 
 
 @pytest.fixture(scope='module')
 def predict_placebo(predict_dummy, data_zero, cutoff, alpha, p, n_rep, fs_specification):
     return predict_dummy(
-        data_zero, cutoff=cutoff, alpha=alpha, n_rep=n_rep, p=p, fs_specification=fs_specification
+        data_zero, cutoff=cutoff, alpha=alpha, n_rep=n_rep, p=p, fs_specification=fs_specification, ml_g=ml_g_dummy
     )
 
 
 @pytest.fixture(scope='module')
 def predict_nonplacebo(predict_dummy, data, cutoff, alpha, p, n_rep, fs_specification):
     return predict_dummy(
-        data, cutoff=cutoff, alpha=alpha, n_rep=n_rep, p=p, fs_specification=fs_specification
+        data, cutoff=cutoff, alpha=alpha, n_rep=n_rep, p=p, fs_specification=fs_specification, ml_g=ml_g_dummy
     )
 
 

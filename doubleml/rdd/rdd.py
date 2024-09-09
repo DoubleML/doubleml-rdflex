@@ -13,6 +13,7 @@ from doubleml import DoubleMLData
 from doubleml.double_ml import DoubleML
 from doubleml.utils.resampling import DoubleMLResampling
 from doubleml.utils._checks import _check_resampling_specification, _check_supports_sample_weights
+from doubleml.utils._estimation import _aggregate_coefs_and_ses
 
 
 class RDFlex():
@@ -24,13 +25,18 @@ class RDFlex():
         The :class:`DoubleMLData` object providing the data and specifying the variables for the causal model.
 
     ml_g : estimator implementing ``fit()`` and ``predict()``
-        A machine learner implementing ``fit()`` and ``predict()`` methods (e.g.
-        :py:class:`sklearn.ensemble.RandomForestRegressor`) for the nuisance function :math:`g_0(X) = E[Y|X]`.
+        A machine learner implementing ``fit()`` and ``predict()`` methods and support ``sample_weights`` (e.g.
+        :py:class:`sklearn.ensemble.RandomForestRegressor`) for the nuisance functions
+        :math:`g_0^{\\pm}(X) = E[Y|\\text{score}=\\text{cutoff}^{\\pm}, X]`. The adjustment function is then
+        defined as :math:`\\eta_0(X) = (g_0^{+}(X) + g_0^{-}(X))/2`.
 
     ml_m : classifier implementing ``fit()`` and ``predict_proba()`` or None
-        A machine learner implementing ``fit()`` and ``predict_proba()`` methods (e.g.
-        :py:class:`sklearn.ensemble.RandomForestClassifier`) for the nuisance function :math:`m_0(X) = E[D|X]`.
+        A machine learner implementing ``fit()`` and ``predict_proba()`` methods and support ``sample_weights``(e.g.
+        :py:class:`sklearn.ensemble.RandomForestClassifier`) for the nuisance functions
+        :math:`m_0^{\\pm}(X) = E[D|\\text{score}=\\text{cutoff}^{\\pm}, X]`. The adjustment function is then
+        defined as :math:`\\eta_0(X) = (m_0^{+}(X) + m_0^{-}(X))/2`.
         Or None, in case of a non-fuzzy design.
+        Default is ``None``.
 
     fuzzy : bool
         Indicates whether to fit a fuzzy or a sharp design.
@@ -54,6 +60,11 @@ class RDFlex():
         Initial bandwidth in the first stage estimation. If ``None``, then the optimal bandwidth without
         covariates will be used.
         Default is ``None``.
+
+    fs_specification : str
+        Specification of the first stage regression. The options are ``cutoff``, ``cutoff and score`` and
+        ``interacted cutoff and score``.
+        Default is ``cutoff``.
 
     fs_kernel : str
         Kernel for the first stage estimation. ``uniform``, ``triangular`` and ``epanechnikov``are supported.
@@ -79,6 +90,7 @@ class RDFlex():
                  n_folds=5,
                  n_rep=1,
                  h_fs=None,
+                 fs_specification="cutoff",
                  fs_kernel="uniform",
                  **kwargs):
 
@@ -91,8 +103,7 @@ class RDFlex():
         self._fuzzy = fuzzy
 
         if not fuzzy and any(self._dml_data.d != self._intendend_treatment):
-            warnings.warn('Fuzzy flag indicates compliance of actual treatment with the cutoff. '
-                          'But the dataset contains non-compliant defiers.')
+            warnings.warn('A sharp RD design is being estimated, but the data indicate that the design is fuzzy.')
 
         self._check_and_set_learner(ml_g, ml_m)
 
@@ -111,6 +122,7 @@ class RDFlex():
                                 f'Object of type {str(type(h_fs))} passed.')
             self._h_fs = h_fs
 
+        self._fs_specification = self._check_fs_specification(fs_specification)
         self._fs_kernel_function, self._fs_kernel_name = self._check_and_set_kernel(fs_kernel)
         self._w = self._calc_weights(kernel=self._fs_kernel_function, h=self.h_fs)
 
@@ -122,7 +134,8 @@ class RDFlex():
         self._smpls = DoubleMLResampling(n_folds=self.n_folds, n_rep=self.n_rep, n_obs=obj_dml_data.n_obs,
                                          stratify=obj_dml_data.d).split_samples()
 
-        self._initialize_reps(n_rep=self.n_rep)
+        self._M_Y, self._M_D, self._h, self._rdd_obj, \
+            self._all_coef, self._all_se, self._all_ci = self._initialize_arrays()
 
     def __str__(self):
         if np.any(~np.isnan(self._M_Y[:, 0])):
@@ -356,9 +369,27 @@ class RDFlex():
         return df_ci
 
     def _fit_nuisance_model(self, outcome, estimator_name, weights, smpls):
-        Z = self._intendend_treatment  # instrument for treatment
+
+        # Include transformation of score and cutoff if necessary
+        if self._fs_specification == "cutoff":
+            Z = self._intendend_treatment  # instrument for treatment
+            Z_left = np.zeros_like(Z)
+            Z_right = np.ones_like(Z)
+        elif self._fs_specification == "cutoff and score":
+            Z = np.column_stack((self._intendend_treatment, self._score))
+            Z_left = np.zeros_like(Z)
+            Z_right = np.column_stack((np.ones_like(self._intendend_treatment), np.zeros_like(self._score)))
+        else:
+            assert self._fs_specification == "interacted cutoff and score"
+            Z = np.column_stack((self._intendend_treatment, self._intendend_treatment * self._score, self._score))
+            Z_left = np.zeros_like(Z)
+            Z_right = np.column_stack((np.ones_like(self._intendend_treatment), np.zeros_like(self._score),
+                                       np.zeros_like(self._score)))
+
         X = self._dml_data.x
         ZX = np.column_stack((Z, X))
+        ZX_left = np.column_stack((Z_left, X))
+        ZX_right = np.column_stack((Z_right, X))
 
         mu_left, mu_right = np.full_like(outcome, fill_value=np.nan), np.full_like(outcome, fill_value=np.nan)
 
@@ -366,16 +397,13 @@ class RDFlex():
             estimator = clone(self._learner[estimator_name])
             estimator.fit(ZX[train_index], outcome[train_index], sample_weight=weights[train_index])
 
-            X_test_left = np.column_stack((np.zeros_like(Z[test_index]), X[test_index]))
-            X_test_right = np.column_stack((np.ones_like(Z[test_index]), X[test_index]))
-
             if self._predict_method[estimator_name] == "predict":
-                mu_left[test_index] = estimator.predict(X_test_left)
-                mu_right[test_index] = estimator.predict(X_test_right)
+                mu_left[test_index] = estimator.predict(ZX_left[test_index])
+                mu_right[test_index] = estimator.predict(ZX_right[test_index])
             else:
                 assert self._predict_method[estimator_name] == "predict_proba"
-                mu_left[test_index] = estimator.predict_proba(X_test_left)[:, 1]
-                mu_right[test_index] = estimator.predict_proba(X_test_right)[:, 1]
+                mu_left[test_index] = estimator.predict_proba(ZX_left[test_index])[:, 1]
+                mu_right[test_index] = estimator.predict_proba(ZX_right[test_index])[:, 1]
 
         return (mu_left + mu_right)/2
 
@@ -407,14 +435,16 @@ class RDFlex():
         weights = kernel(self._score, h)
         return weights
 
-    def _initialize_reps(self, n_rep):
-        self._M_Y = np.full(shape=(self._dml_data.n_obs, n_rep), fill_value=np.nan)
-        self._M_D = np.full(shape=(self._dml_data.n_obs, n_rep), fill_value=np.nan)
-        self._h = np.full(shape=n_rep, fill_value=np.nan)
-        self._rdd_obj = [None] * n_rep
-        self._all_coef = np.full(shape=(3, n_rep), fill_value=np.nan)
-        self._all_se = np.full(shape=(3, n_rep), fill_value=np.nan)
-        self._all_ci = np.full(shape=(3, 2, n_rep), fill_value=np.nan)
+    def _initialize_arrays(self):
+        M_Y = np.full(shape=(self._dml_data.n_obs, self.n_rep), fill_value=np.nan)
+        M_D = np.full(shape=(self._dml_data.n_obs, self.n_rep), fill_value=np.nan)
+        h = np.full(shape=self.n_rep, fill_value=np.nan)
+        rdd_obj = [None] * self.n_rep
+        all_coef = np.full(shape=(3, self.n_rep), fill_value=np.nan)
+        all_se = np.full(shape=(3, self.n_rep), fill_value=np.nan)
+        all_ci = np.full(shape=(3, 2, self.n_rep), fill_value=np.nan)
+
+        return M_Y, M_D, h, rdd_obj, all_coef, all_se, all_ci
 
     def _check_data(self, obj_dml_data, cutoff):
         if not isinstance(obj_dml_data, DoubleMLData):
@@ -507,6 +537,16 @@ class RDFlex():
 
         return kernel_function, kernel_name
 
+    def _check_fs_specification(self, fs_specification):
+        if not isinstance(fs_specification, str):
+            raise TypeError("fs_specification must be a string. "
+                            f'{str(fs_specification)} of type {str(type(fs_specification))} was passed.')
+        expected_specifications = ["cutoff", "cutoff and score", "interacted cutoff and score"]
+        if fs_specification not in expected_specifications:
+            raise ValueError(f"Invalid fs_specification '{fs_specification}'. "
+                             f"Valid specifications are {expected_specifications}.")
+        return fs_specification
+
     def _check_iterations(self, n_iterations):
         """Validate the number of iterations."""
         if not isinstance(n_iterations, int):
@@ -525,7 +565,8 @@ class RDFlex():
                           "Treatment assignment might be based on the wrong side of the cutoff.")
 
     def aggregate_over_splits(self):
-        self._coef = np.median(self.all_coef, axis=1)
+        var_scaling_factors = np.array([np.sum(res.N_h) for res in self._rdd_obj])
+        self._coef, self._se = _aggregate_coefs_and_ses(self.all_coef, self.all_se, var_scaling_factors)
         self._ci = np.median(self._all_ci, axis=2)
-        med_se = np.median(self.all_se, axis=1)
-        self._se = [np.sqrt(np.median(med_se[i]**2 + (self.all_coef[i, :] - self._coef[i])**2)) for i in range(3)]
+        self._N_h = np.median([res.N_h for res in self._rdd_obj], axis=0)
+        self._final_h = np.median([res.bws for res in self._rdd_obj], axis=0)[0, 0]
