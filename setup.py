@@ -11,10 +11,10 @@ PROJECT_URLS = {
 
 setup(
     name='DoubleML',
-    version='0.9.dev0',
-    author='Bach, P., Chernozhukov, V., Kurz, M. S., and Spindler, M.',
-    maintainer='Malte S. Kurz',
-    maintainer_email='malte.simon.kurz@uni-hamburg.de',
+    version='0.10.dev0',
+    author='Bach, P., Chernozhukov, V., Klaassen, S., Kurz, M. S., and Spindler, M.',
+    maintainer='Sven Klaassen',
+    maintainer_email='sven.klaassen@uni-hamburg.de',
     description='Double Machine Learning in Python',
     long_description=long_description,
     long_description_content_type='text/markdown',
