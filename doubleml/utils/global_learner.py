@@ -1,5 +1,6 @@
-from sklearn.base import clone, BaseEstimator, RegressorMixin, ClassifierMixin
-# from doubleml.double_ml import DoubleML
+from sklearn.base import BaseEstimator, RegressorMixin, ClassifierMixin, is_regressor, is_classifier, clone
+
+from sklearn.utils.multiclass import unique_labels
 
 
 class GlobalRegressor(BaseEstimator, RegressorMixin):
@@ -12,7 +13,10 @@ class GlobalRegressor(BaseEstimator, RegressorMixin):
     Regressor that is used when ``fit()`` ``predict()`` and ``predict_proba()`` are being called.
     """
     def __init__(self, base_estimator):
-        # DoubleML._check_learner(base_estimator, 'base_estimator', regressor=True, classifier=False)
+
+        if not is_regressor(base_estimator):
+            raise ValueError(f'base_estimator must be a regressor. Got {base_estimator.__class__.__name__} instead.')
+
         self.base_estimator = base_estimator
 
     def fit(self, X, y, sample_weight=None):
@@ -57,7 +61,10 @@ class GlobalClassifier(BaseEstimator, ClassifierMixin):
     Classifier that is used when ``fit()``, ``predict()`` and ``predict_proba()`` are being called.
     """
     def __init__(self, base_estimator):
-        # DoubleML._check_learner(base_estimator, 'base_estimator', regressor=False, classifier=True)
+
+        if not is_classifier(base_estimator):
+            raise ValueError(f'base_estimator must be a classifier. Got {base_estimator.__class__.__name__} instead.')
+
         self.base_estimator = base_estimator
 
     def fit(self, X, y, sample_weight=None):
@@ -75,6 +82,7 @@ class GlobalClassifier(BaseEstimator, ClassifierMixin):
         sample_weight: array-like of shape (n_samples,).
         Individual weights for each sample. Ignored.
         """
+        self.classes_ = unique_labels(y)
         self._fitted_learner = clone(self.base_estimator)
         self._fitted_learner.fit(X, y)
 
