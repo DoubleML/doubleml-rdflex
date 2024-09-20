@@ -33,8 +33,9 @@ def dgp_area_yield(
     This dgp mimics a production process where the yield of a production lot consisting of `K` individual items to be
     optimized. Each item is described by a 2D location on a plane. The initial datapoints for a lot are randomly sampled
     from a region specified by
-    - `origin_shape` (either 'equal' or 'gaussian' distribution)
-    - `origin_a`, `origin_b`: determining the range of the shape in the x and y directions.
+    - `origin_shape` (either 'ellipsis' or 'rectangle', corresponding to gaussian or uniform distribution)
+    - `origin_a`, `origin_b`: determining the range of the shape (for uniform distribution) or variance
+      (for gaussian distribution) in the x and y directions.
 
     The goal is to move all the items of a lot into a target region. This region is specified through `target_center`,
     `target_a`, `target_b`, and `target_shape`, which have the same meaning as for the origin.
@@ -65,6 +66,90 @@ def dgp_area_yield(
     - `treatment_random_share`: some decision makers might defy this
 
     Note that defiers can also be caused by the partial information the decision maker has!
+
+    Parameters
+    ----------
+    seed: int or None
+        Seed for the random number generator.
+        Default is None.
+    n_obs: int
+        Number of observations.
+        Default is 5000.
+    K: int
+        Number of items in a production lot.
+        Default is 100.
+    origin_shape: str
+        Shape of the origin distribution. Either 'ellipsis' (gaussian) or 'rectangle' (uniform).
+        Default is 'ellipsis'.
+    origin_a: float
+        Parameter for the origin distribution in x direction.
+        Default is 0.035.
+    origin_b: float
+        Parameter for the origin distribution in y direction.
+        Default is 0.01.
+    origin_pertubation: float
+        Magnitude of random shifts applied to the points in the orthogonal direction of the target vector.
+        Default is 0.1.
+    target_center: tuple
+        Center of the target region.
+        Default is (1.5, 0).
+    target_a: float
+        Parameter for the target region in x direction.
+        Default is 0.6.
+    target_b: float
+        Parameter for the target region in y direction.
+        Default is 0.3.
+    target_shape: str
+        Shape of the target region. Either 'ellipsis' or 'rectangle'.
+        Default is 'ellipsis'.
+    action_shift: tuple
+        Shift vector applied to the points.
+        Default is (1.0, 0).
+    action_scale: float
+        Expansion factor of the point cloud while maintaining its center.
+        Default is 1.02.
+    action_pertubation: tuple
+        Magnitude of random perturbations applied to the `action_shift` vector.
+        Default is (0.001, 0.0006).
+    action_drag_share: float
+        Share of points that get dragged behind.
+        Default is 0.7.
+    action_drag_scale: float
+        Magnitude of the drag force.
+        Default is 0.5.
+    running_dist_measure: str
+        Distance measure for the first decision criterion. Either 'projected' or 'euclidean'.
+        Default is 'projected'.
+    running_mea_selection: int
+        Measure every k-th item.
+        Default is 5.
+    treatment_dist: float
+        Cutoff for the distance criterion `X1`.
+        Default is 0.45.
+    treatment_improvement: float
+        Cutoff for the estimated yield improvement `X2`.
+        Default is 0.
+    treatment_random_share: float
+        Share of decision makers that defy the treatment.
+        Default is 0.001.
+
+    Returns
+    -------
+    dict
+        Dictionary containing the following
+        - state: initial state of the production lot
+        - treated_state: state after applying the action
+        - final_state: final state after treatment decision
+        - X: observed state
+        - Y0: yield without treatment
+        - Y1: yield with treatment
+        - Y: observed yield
+        - score_distance: distance from target
+        - score_improvement: estimated yield improvement
+        - score_distance_act: actual distance from target
+        - score_improvement_act: actual yield improvement
+        - T: treatment assignment
+        - D: actual treatment assignment
     """
     rnd = np.random.default_rng(seed)
 
@@ -72,8 +157,11 @@ def dgp_area_yield(
         rnd, n_obs, K,
         target_center, origin_a, origin_b, origin_shape, origin_pertubation,
     )
+
+    estimated_state = state + np.array(action_shift)
     measured_state = state[:, ::running_mea_selection, :]
-    estimated_state = measured_state + np.array(action_shift)
+    estimated_measured_state = estimated_state[:, ::running_mea_selection, :]
+
     treated_state = _execute_action(
         rnd,
         n_obs, K,
@@ -86,37 +174,39 @@ def dgp_area_yield(
     )
 
     # estimated yield + yield
-    y0_est, _ = _check_yield(measured_state, target_center, target_a, target_a, target_shape)
+    y0_est_measured, _ = _check_yield(measured_state, target_center, target_a, target_a, target_shape)
+    y1_est_measured, _ = _check_yield(estimated_measured_state, target_center, target_a, target_a, target_shape)
     y1_est, _ = _check_yield(estimated_state, target_center, target_a, target_a, target_shape)
+
     y0, _ = _check_yield(state, target_center, target_a, target_b, target_shape)
     y1, _ = _check_yield(treated_state, target_center, target_a, target_b, target_shape)
 
     # running variables
-    center_est = np.mean(measured_state, axis=1)
+    center_measured = np.mean(measured_state, axis=1)
     center = np.mean(state, axis=1)
 
     if running_dist_measure == 'projected':
         # magnitude in action_shift direction: <center - target, e_0> e_0
         e_0 = action_shift / np.linalg.norm(action_shift)
-        distance_est = np.matmul(target_center - center_est, e_0)
+        distance_measured = np.matmul(target_center - center_measured, e_0)
         distance = np.matmul(target_center - center, e_0)
 
     elif running_dist_measure == 'euclidean':
-        distance_est = np.linalg.norm(center_est - target_center, axis=1)
+        distance_measured = np.linalg.norm(center_measured - target_center, axis=1)
         distance = np.linalg.norm(center - target_center, axis=1)
     else:
         raise ValueError('unkown distance measure')
 
-    improvement_est = y1_est - y0_est
-    improvement = y1 - y0
+    improvement_est_measured = y1_est_measured - y0_est_measured
+    improvement_est = y1_est - y0
 
     # treatment decision
     if treatment_dist is None:
         treatment_dist = np.linalg.norm(action_shift)
-    assinged_treatment = (distance_est >= treatment_dist) & (improvement_est > treatment_improvement)
+    assinged_treatment = (distance_measured >= treatment_dist) & (improvement_est_measured > treatment_improvement)
 
     # we assume that the decision maker knows the state better
-    actual_treatment = (distance >= treatment_dist) & (improvement > treatment_improvement)
+    actual_treatment = (distance >= treatment_dist) & (improvement_est > treatment_improvement)
     if treatment_random_share > 0:
         n_rnd = int(n_obs*treatment_random_share)
         actual_treatment[:n_rnd] = rnd.choice([True, False], size=n_rnd)
@@ -132,14 +222,14 @@ def dgp_area_yield(
         'state': state,
         'treated_state': treated_state,
         'final_state': state_obs,
-        'Z': measured_state,
+        'X': measured_state,
         'Y0': y0,
         'Y1': y1,
         'Y': y_obs,
-        'X1': distance_est,
-        'X2': improvement_est,
-        'X1_act': distance,
-        'X2_act': improvement,
+        'score_distance': distance_measured,
+        'score_improvement': improvement_est_measured,
+        'score_distance_act': distance,
+        'score_improvement_act': improvement_est,
         'T': assinged_treatment,
         'D': actual_treatment
     }
