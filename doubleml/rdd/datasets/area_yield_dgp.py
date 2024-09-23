@@ -197,8 +197,9 @@ def dgp_area_yield(
     else:
         raise ValueError('unkown distance measure')
 
-    improvement_est_measured = y1_est_measured - y0_est_measured
-    improvement_est = y1_est - y0
+    improvement_noise = rnd.uniform(-0.03, 0.03, n_obs) + 0.01
+    improvement_est_measured = y1_est_measured - y0_est_measured + improvement_noise
+    improvement_est = y1_est - y0 + improvement_noise
 
     # treatment decision
     if treatment_dist is None:
@@ -206,7 +207,7 @@ def dgp_area_yield(
     assinged_treatment = (distance_measured >= treatment_dist) & (improvement_est_measured > treatment_improvement)
 
     # we assume that the decision maker knows the state better
-    actual_treatment = (distance >= treatment_dist) & (improvement_est > treatment_improvement)
+    actual_treatment = (distance_measured >= treatment_dist) & (improvement_est > treatment_improvement)
     if treatment_random_share > 0:
         n_rnd = int(n_obs*treatment_random_share)
         actual_treatment[:n_rnd] = rnd.choice([True, False], size=n_rnd)
@@ -330,7 +331,7 @@ def _generate_initial_states(
     shift = np.repeat(np.expand_dims(shift, 1), K, axis=1)
 
     # randomly shift orthogonal
-    lambda_t = np.expand_dims(rnd.normal(0, 1, n_obs), 1)
+    lambda_t = np.expand_dims(rnd.uniform(0, 1, n_obs), 1)
     shift_perp = np.array([-target_center[1], target_center[0]])
     shift_perp = shift_perp / np.linalg.norm(shift_perp) * origin_pertubation
     shift_perp = lambda_t * np.expand_dims(shift_perp, 0).repeat(n_obs, 0)
