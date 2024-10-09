@@ -197,7 +197,7 @@ def dgp_area_yield(
     else:
         raise ValueError('unkown distance measure')
 
-    improvement_noise = rnd.uniform(-0.03, 0.03, n_obs) + 0.01
+    improvement_noise = 0.00 * rnd.uniform(-1, 1, n_obs) - 0.0
     improvement_est_measured = y1_est_measured - y0_est_measured + improvement_noise
     improvement_est = y1_est - y0 + improvement_noise
 
