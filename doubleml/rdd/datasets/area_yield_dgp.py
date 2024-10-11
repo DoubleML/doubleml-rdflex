@@ -27,7 +27,9 @@ def dgp_area_yield(
     # treatment
     treatment_dist=0.45,
     treatment_improvement=0,
-    treatment_random_share=0.001
+    treatment_random_share=0.001,
+    improvement_noise_scale=0.01,
+    improvement_noise_loc=0.01,
 ):
     """
     This dgp mimics a production process where the yield of a production lot consisting of `K` individual items to be
@@ -132,6 +134,12 @@ def dgp_area_yield(
     treatment_random_share: float
         Share of decision makers that defy the treatment.
         Default is 0.001.
+    improvement_noise_scale: float
+        Scale of the noise added to the estimated yield improvement.
+        Default is 0.01.
+    improvement_noise_loc: float
+        Location of the noise added to the estimated yield improvement.
+        Default is 0.01.
 
     Returns
     -------
@@ -197,7 +205,7 @@ def dgp_area_yield(
     else:
         raise ValueError('unkown distance measure')
 
-    improvement_noise = 0.00 * rnd.uniform(-1, 1, n_obs) - 0.0
+    improvement_noise = improvement_noise_scale * rnd.uniform(-1, 1, n_obs) - improvement_noise_loc
     improvement_est_measured = y1_est_measured - y0_est_measured + improvement_noise
     improvement_est = y1_est - y0 + improvement_noise
 
