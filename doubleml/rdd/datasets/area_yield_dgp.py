@@ -283,7 +283,7 @@ def _execute_action(
             replace=True, p=[1-action_drag_share, action_drag_share]
         )
         # choose drag lambda (n_obs, K, 2)
-        drag_force = np.random.uniform(0, action_drag_scale, n_obs*K)
+        drag_force = rnd.uniform(0, action_drag_scale, n_obs*K)
         drag_force = np.expand_dims(drag_force, 0).reshape(n_obs, K)
         drag_force = drag_mask * drag_force
         drag_force = np.repeat(np.expand_dims(drag_force, 2), 2, axis=2)
