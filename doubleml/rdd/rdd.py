@@ -8,6 +8,7 @@ from rdrobust import rdrobust, rdbwselect
 
 from sklearn.base import clone
 from sklearn.utils.multiclass import type_of_target
+from sklearn.metrics import root_mean_squared_error, log_loss
 
 from doubleml import DoubleMLData
 from doubleml.double_ml import DoubleML
@@ -134,7 +135,8 @@ class RDFlex():
                                          stratify=obj_dml_data.d).split_samples()
 
         self._M_Y, self._M_D, self._h, self._rdd_obj, \
-            self._all_coef, self._all_se, self._all_ci = self._initialize_arrays()
+            self._all_coef, self._all_se, self._all_ci, \
+            self._predictions = self._initialize_arrays()
 
     def __str__(self):
         if np.any(~np.isnan(self._M_Y[:, 0])):
@@ -277,6 +279,13 @@ class RDFlex():
         """
         return self._all_se
 
+    @property
+    def predictions(self):
+        """
+        Dictionary of predictions of the (weighted) first stage estimation.
+        """
+        return self._predictions
+
     def fit(self, n_iterations=2):
         """
         Estimate RDFlex model.
@@ -305,14 +314,14 @@ class RDFlex():
             weights = self.w
 
             for iteration in range(n_iterations):
-                eta_Y = self._fit_nuisance_model(outcome=Y, estimator_name="ml_g",
-                                                 weights=weights, smpls=self._smpls[i_rep])
-                self._M_Y[:, i_rep] = Y - eta_Y
+                self._predictions["ml_g"][:, i_rep] = self._fit_nuisance_model(outcome=Y, estimator_name="ml_g",
+                                                                               weights=weights, smpls=self._smpls[i_rep])
+                self._M_Y[:, i_rep] = Y - self._predictions["ml_g"][:, i_rep]
 
                 if self.fuzzy:
-                    eta_D = self._fit_nuisance_model(outcome=D, estimator_name="ml_m",
-                                                     weights=weights, smpls=self._smpls[i_rep])
-                    self._M_D[:, i_rep] = D - eta_D
+                    self._predictions["ml_m"][:, i_rep] = self._fit_nuisance_model(outcome=D, estimator_name="ml_m",
+                                                                                   weights=weights, smpls=self._smpls[i_rep])
+                    self._M_D[:, i_rep] = D - self._predictions["ml_m"][:, i_rep]
 
                 # update weights via iterative bandwidth fitting
                 if iteration < (n_iterations - 1):
@@ -367,6 +376,31 @@ class RDFlex():
                              index=['Conventional', 'Bias-Corrected', 'Robust'])
 
         return df_ci
+
+    def evaluate_learners(self):
+        """
+        Evaluate fitted learners for RDFlex models on cross-validated predictions.
+
+        Parameters
+        ----------
+
+        Returns
+        -------
+        dist : dict
+            A dictionary containing the evaluated metric for each learner.
+
+        """
+        if np.all(np.isnan(self.predictions["ml_g"])):
+            raise ValueError('Apply fit() before evaluate_learners().')
+        else:
+            dist = {learner: np.full((self.n_rep), np.nan)
+                    for learner in self.predictions.keys()}
+            for i_rep in range(self.n_rep):
+                dist["ml_g"] = root_mean_squared_error(self._dml_data.y, self.predictions["ml_g"][:, i_rep],
+                                                       sample_weight=self.w)
+                if self.fuzzy:
+                    dist["ml_m"] = log_loss(self._dml_data.d, self.predictions["ml_m"][:, i_rep], sample_weight=self.w)
+            return dist
 
     def _fit_nuisance_model(self, outcome, estimator_name, weights, smpls):
 
@@ -444,8 +478,9 @@ class RDFlex():
         all_coef = np.full(shape=(3, self.n_rep), fill_value=np.nan)
         all_se = np.full(shape=(3, self.n_rep), fill_value=np.nan)
         all_ci = np.full(shape=(3, 2, self.n_rep), fill_value=np.nan)
+        preds = {key: np.full((self._dml_data.n_obs, self.n_rep), np.nan) for key in self._learner.keys()}
 
-        return M_Y, M_D, h, rdd_obj, all_coef, all_se, all_ci
+        return M_Y, M_D, h, rdd_obj, all_coef, all_se, all_ci, preds
 
     def _check_data(self, obj_dml_data, cutoff):
         if not isinstance(obj_dml_data, DoubleMLData):
