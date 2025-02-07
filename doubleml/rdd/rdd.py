@@ -8,7 +8,7 @@ from rdrobust import rdrobust, rdbwselect
 
 from sklearn.base import clone
 from sklearn.utils.multiclass import type_of_target
-from sklearn.metrics import root_mean_squared_error, log_loss
+from sklearn.metrics import root_mean_squared_error, log_loss, r2_score
 
 from doubleml import DoubleMLData
 from doubleml.double_ml import DoubleML
@@ -136,7 +136,11 @@ class RDFlex():
 
         self._M_Y, self._M_D, self._h, self._rdd_obj, \
             self._all_coef, self._all_se, self._all_ci, \
-            self._predictions = self._initialize_arrays()
+            self._predictions, self._nuisance_loss = self._initialize_arrays()
+
+        self._r2test = {"ml_g": {'left': np.full((self._n_rep), np.nan),
+                                 'right': np.full((self._n_rep), np.nan)}}
+        self._mu = {}
 
     def __str__(self):
         if np.any(~np.isnan(self._M_Y[:, 0])):
@@ -439,6 +443,8 @@ class RDFlex():
                 mu_left[test_index] = estimator.predict_proba(ZX_left[test_index])[:, 1]
                 mu_right[test_index] = estimator.predict_proba(ZX_right[test_index])[:, 1]
 
+        self._calc_nuisance_loss(outcome, estimator_name, mu_left, mu_right, weights)
+
         return (mu_left + mu_right)/2
 
     def _update_weights(self):
@@ -479,8 +485,14 @@ class RDFlex():
         all_se = np.full(shape=(3, self.n_rep), fill_value=np.nan)
         all_ci = np.full(shape=(3, 2, self.n_rep), fill_value=np.nan)
         preds = {key: np.full((self._dml_data.n_obs, self.n_rep), np.nan) for key in self._learner.keys()}
+        nui_loss = {
+            key: {
+                'left': np.full((self._n_rep), np.nan),
+                'right': np.full((self._n_rep), np.nan)
+            } for key in ["ml_g", "ml_m"]
+        }
 
-        return M_Y, M_D, h, rdd_obj, all_coef, all_se, all_ci, preds
+        return M_Y, M_D, h, rdd_obj, all_coef, all_se, all_ci, preds, nui_loss
 
     def _check_data(self, obj_dml_data, cutoff):
         if not isinstance(obj_dml_data, DoubleMLData):
@@ -599,6 +611,25 @@ class RDFlex():
         if treatment_prob_difference > tolerance:
             warnings.warn("Treatment probability within bandwidth left from cutoff higher than right from cutoff.\n"
                           "Treatment assignment might be based on the wrong side of the cutoff.")
+
+    def _calc_nuisance_loss(self, outcome, estimator_name, mu_left, mu_right, weights):
+        y_pred = {"left": mu_left, "right": mu_right}
+        mask = {"left": ~self._intendend_treatment, "right": self._intendend_treatment}
+        for side in ["left", "right"]:
+            if estimator_name == "ml_g":
+                self._nuisance_loss["ml_g"][side][self._i_rep] = root_mean_squared_error(y_true=self._dml_data.y[mask[side]],
+                                                                                         y_pred=y_pred[side][mask[side]],
+                                                                                         sample_weight=weights[mask[side]])
+                self._r2test["ml_g"][side][self._i_rep] = r2_score(y_true=self._dml_data.y[mask[side]],
+                                                                   y_pred=y_pred[side][mask[side]],
+                                                                   sample_weight=weights[mask[side]])
+            else:
+                assert estimator_name == "ml_m"
+                self._nuisance_loss["ml_m"][side][self._i_rep] = log_loss(y_true=self._dml_data.d[mask[side]],
+                                                                          y_pred=y_pred[side][mask[side]],
+                                                                          sample_weight=weights[mask[side]],
+                                                                          labels=[0, 1])
+        self._mu[estimator_name] = y_pred
 
     def aggregate_over_splits(self):
         var_scaling_factors = np.array([np.sum(res.N_h) for res in self._rdd_obj])
