@@ -4,6 +4,7 @@ import numpy as np
 def dgp_area_yield(
     seed=None,
     n_obs=5000,
+    include_nevertakers=True,
     K=100,
     # origin
     origin_shape='ellipsis',
@@ -77,6 +78,8 @@ def dgp_area_yield(
     n_obs: int
         Number of observations.
         Default is 5000.
+    include_nevertakers: bool
+        Operator overwrites decisions by domain knowledge, adding nevertakers on a third dimension.
     K: int
         Number of items in a production lot.
         Default is 100.
@@ -203,7 +206,7 @@ def dgp_area_yield(
         distance_measured = np.linalg.norm(center_measured - target_center, axis=1)
         distance = np.linalg.norm(center - target_center, axis=1)
     else:
-        raise ValueError('unkown distance measure')
+        raise ValueError('unknown distance measure')
 
     improvement_noise = improvement_noise_scale * rnd.uniform(-1, 1, n_obs) - improvement_noise_loc
     improvement_est_measured = y1_est_measured - y0_est_measured + improvement_noise
@@ -215,7 +218,13 @@ def dgp_area_yield(
     assinged_treatment = (distance_measured >= treatment_dist) & (improvement_est_measured > treatment_improvement)
 
     # we assume that the decision maker knows the state better
-    actual_treatment = (distance_measured >= treatment_dist) & (improvement_est > treatment_improvement)
+    if include_nevertakers:
+        operator_decision = (improvement_est > treatment_improvement)
+    else:
+        operator_decision = np.full_like(assinged_treatment, fill_value=True)
+
+    actual_treatment = assinged_treatment & operator_decision
+
     if treatment_random_share > 0:
         n_rnd = int(n_obs*treatment_random_share)
         actual_treatment[:n_rnd] = rnd.choice([True, False], size=n_rnd)
@@ -240,6 +249,7 @@ def dgp_area_yield(
         'score_distance_act': distance,
         'score_improvement_act': improvement_est,
         'T': assinged_treatment,
+        'operator_decision': operator_decision,
         'D': actual_treatment
     }
 
