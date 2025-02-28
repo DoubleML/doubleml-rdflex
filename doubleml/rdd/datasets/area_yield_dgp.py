@@ -161,6 +161,7 @@ def dgp_area_yield(
         - score_improvement_act: actual yield improvement
         - T: treatment assignment
         - D: actual treatment assignment
+        - complier: indicator if an unit complied or is a nevertaker
     """
     rnd = np.random.default_rng(seed)
 
@@ -219,11 +220,11 @@ def dgp_area_yield(
 
     # we assume that the decision maker knows the state better
     if include_nevertakers:
-        operator_decision = (improvement_est > treatment_improvement)
+        operator_overwrite = (improvement_est > treatment_improvement)
     else:
-        operator_decision = np.full_like(assinged_treatment, fill_value=True)
+        operator_overwrite = np.full_like(assinged_treatment, fill_value=True)
 
-    actual_treatment = assinged_treatment & operator_decision
+    actual_treatment = assinged_treatment & operator_overwrite
 
     if treatment_random_share > 0:
         n_rnd = int(n_obs*treatment_random_share)
@@ -249,7 +250,7 @@ def dgp_area_yield(
         'score_distance_act': distance,
         'score_improvement_act': improvement_est,
         'T': assinged_treatment,
-        'operator_decision': operator_decision,
+        'complier': operator_overwrite,
         'D': actual_treatment
     }
 
